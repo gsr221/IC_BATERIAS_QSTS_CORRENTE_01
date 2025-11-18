@@ -1,19 +1,27 @@
 import time as t
 
-linkFile = "'D:/IC/Segundo_ano/4Bus-DY-Bal/4Bus-DY-Bal.DSS'"
-seqVoltageDir = "D:/IC/Segundo_ano/4Bus-DY-Bal/4busDYBal_EXP_SEQVOLTAGES.CSV"
+#==diretorios dos arquivos==#
+pasta = "13Bus"
+arquivo = "IEEE13Nodeckt.dss"
 
-# barra = 671
-SOCmin = 0.20
-SOCmax = 0.80
-
+#==Dados da bateria==#
+pMax = 1000  # kW
+Ebat = 1000  # kWh
+iMax = 850  # A
+SOCmin = 0.10
+SOCmax = 0.90
 eficiencia = 0.95
 
+#==Dados do sistema==#
+# barra = 671
+NG = 500
+NP = 1000
 dT = 1  # Intervalo de tempo em horas
-
 baseKVmediaTensao = 4.16  # kV media tensão base do sistema
 
-cc1 = [
+flag = True
+
+cc = [
     0.40,  # 00h
     0.35,  # 01h
     0.30,  # 02h
@@ -40,8 +48,7 @@ cc1 = [
     0.55   # 23h
 ]
 
-
-cc = [
+cc1 = [
     0.40,  # 00h
     0.35,  # 01h
     0.30,  # 02h
@@ -52,7 +59,28 @@ cc = [
     0.70,  # 07h
     0.75,  # 08h
     0.65,  # 09h
-    0.60
+    0.60,
+    1.00,
+    0.95,
+    0,
+    0
+    
+]
+
+cc2 = [
+    0.40,  # 00h
+    0.35,  # 01h
+    0.30,  # 02h
+    0.28,  # 03h
+    0.30,  # 04h
+    0.40,  # 05h
+    0.55,  # 06h
+    0.70,  # 07h
+    0.75,  # 08h
+    0.65,  # 09h
+    0.60,
+    1.00,
+    0.95
 ]
 
 def converte_tempo(t0):

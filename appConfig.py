@@ -69,7 +69,7 @@ class MainFrame(ttk.Frame):
         self.tree.configure(yscrollcommand=self.treescrolly.set, xscrollcommand=self.treescrollx.set)
         
         #Botoes:
-        self.botaoRodar = ttk.Button(self.frameBotoes, text = 'Rodar', command=lambda: FunBotaoRoda(self.tree, self.potMaEntry, self.potMbEntry, self.potMcEntry, self.axDeseq, self.canvasDeseq))
+        self.botaoRodar = ttk.Button(self.frameBotoes, text = 'Rodar', command=lambda: run_ag_in_thread(self.tree, self.potMaEntry, self.potMbEntry, self.potMcEntry, self.axDeseq, self.canvasDeseq))
         self.botaoPlot = ttk.Button(self.frameBotoes, text = 'Curva de Carga', command=lambda: FunBotaoPlotar(self.axCC, self.canvasCC))
         
     def creat_layout(self):

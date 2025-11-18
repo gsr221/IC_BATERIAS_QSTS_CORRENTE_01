@@ -1,87 +1,79 @@
-import win32com.client
-import pandas as pd
+import py_dss_interface as pdss
+from py_dss_toolkit import dss_tools
 from consts import *
-
+import numpy as np
+import os
+import pathlib
 
 class DSS():
     def __init__(self):
-        #==Objetos do openDSS==#
-        self.dssObj = win32com.client.Dispatch("OpenDSSEngine.DSS")
+        # Cria objetos do openDSS
+        self.dss = pdss.DSS()
+        self.dssTools = dss_tools
+        self.dssTools.update_dss(self.dss)
         
-        #==Incializa o openDSS no código e seus objetos==#
-        if self.dssObj.Start(0) == False:
-            print("Inicialização do DSS falhou")
-        else:
-            self.dssTxt = self.dssObj.Text
-            self.dssCircuit = self.dssObj.ActiveCircuit
-            self.dssSolution = self.dssCircuit.Solution
-            self.dssBus = self.dssCircuit.ActiveBus
-      
-            
-    #==Limpa a memoria do openDSS==#       
+        
+    def compileFile(self, paste, file):
+        script_path = os.path.dirname(os.path.abspath(__file__))
+        dss_file = pathlib.Path(script_path).joinpath(paste, file)
+        self.dss.text(f"compile [{dss_file}]")
+        
     def clearAll(self):
-        self.dssTxt.Command = "ClearAll"
+        self.dss.text("ClearAll")
         
-        
-    #==Compila o arquivo desejado==#
-    def compileFile(self, dssFileName):
-        self.dssTxt.Command = "Compile " + dssFileName
-        
-        
-    #==Soluciona o circuito do arquivo especificado com o loadMult desejado==#
     def solve(self, loadMult):
-        self.dssSolution.LoadMult = loadMult
-        self.dssSolution.Solve()
+        self.dss.solution.load_mult = loadMult
+        self.dss.solution.solve()
         
-        
-    #==Retorna o nome de todos os barramentos trifásicos==#
     def BusNames(self):
-        bussesNames = self.dssCircuit.AllBusNames
-        tPBusses = []
-
-        #==Verifica o número de fases do barramento, se for >= 3, adiciona na lista==#
-        for busses in bussesNames:
-            self.dssCircuit.SetActiveBus(busses)
-            if self.dssBus.NumNodes >= 3:
-                tPBusses.append(busses)
-
-        #==Retorna a lista com os nomes do barramentos==#
-        return tPBusses
-
-
-    #==Exporta as tensões de sequência para um arquivo CSV==#
-    def exportSeqVoltages(self):
-        self.dssTxt.Command = "Export seqVoltages"
+        busesNames = self.dss.circuit.buses_names
+        tPBuses = []
         
+        for bus in busesNames:
+            self.dss.circuit.set_active_bus(bus)
+            if self.dss.bus.num_nodes >= 3:
+                tPBuses.append(bus)
         
-    #==Retorna um DataFrame com as tensões de sequência==#
-    def dfSeqVolt(self):
-        #==Exporta as tensões de sequência==#
-        self.exportSeqVoltages()
-        
-        #==Tenta ler o arquivo CSV com as tensões de sequência==#
-        try:
-            dfSeqVoltages = pd.read_csv(seqVoltageDir)
-            
-        except FileNotFoundError:
-            return pd.DataFrame()
-        
-        return dfSeqVoltages
+        return tPBuses, busesNames
     
-    #==Aloca as potências no barramento==#
-    def alocaPot(self, barramento, listaPoten):
-        #==Limpa a memória do openDSS e compila o arquivo original novamente==#
-        self.clearAll()
-        self.compileFile(linkFile)
-        
-        #==Ativa o barramento desejado==#
-        # print(f"Alocando potências no barramento: {barramento}")
-        self.dssCircuit.SetActiveBus(barramento)
-        # print(f"Barramento ativo: {self.dssBus.Name}")
-        #==Recebe a tensão base do barramento==#
-        kVBaseBarra = self.dssBus.kVBase
-        #==Aloca as potências no barramento==#
+    
+    def retornaLoadsDF(self):
+        return self.dssTools.model.loads_df
+    
+    def iniciaBESS(self):
+        barra = self.BusNames()[0][0]  # Seleciona a primeira barra de 3 fases para alocar a bateria
+        self.dss.circuit.set_active_bus(barra)
+        # Indentifica a tensão nominal do barramento
+        kVBaseBarra = self.dss.bus.kv_base 
+        # Aloca a bateria no barramento
         for fase in range(3):
-            comando = "New Load.NEW"+str(fase+1)+" Bus1="+str(barramento)+"."+str(fase+1)+" Phases=1 Conn=Wye Model=1 kV="+str(round(kVBaseBarra, 2))+" kW="+str(listaPoten[fase])+" kvar=0"
-            self.dssTxt.Command = comando
+            self.dssTools.model.add_element("load", f"newload{fase+1}", dict(phases=1, bus1=f"{barra}.{fase+1}", kv={round(kVBaseBarra, 2)}, kw=0, pf=1))
+        
+    def alocaPot(self, barra, listaPot):
+        # Ativa o barramento em que será aloacada a potência
+        self.dss.circuit.set_active_bus(barra)
+        # Indentifica a tensão nominal do barramento
+        kVBaseBarra = self.dss.bus.kv_base
+        # Modifica a potência da bateria em cada fase
+        for fase in range(3):
+            self.dssTools.model.edit_element("load", f"newload{fase+1}", {"bus1":f"{barra}.{fase+1}", "kV":f"{round(kVBaseBarra, 2)}", "kW":f"{listaPot[fase]}"})
+
+            
+    def deseq(self):
+        busesNames = self.BusNames()[0]
+        v1 = []
+        v2 = []
+        for bus in busesNames:
+            self.dss.circuit.set_active_bus(bus)
+            v1.append(self.dss.bus.seq_voltages[1])
+            v2.append(self.dss.bus.seq_voltages[2])
+            
+        v1 = np.array(v1)
+        v2 = np.array(v2)
+
+        deseq = (v2 / v1) * 100
+
+        return deseq
     
+    def retornaTensoes(self):  
+        return self.dss.circuit.buses_vmag, self.dss.circuit.buses_vmag_pu

@@ -1,271 +1,252 @@
-from deap import creator, base, tools, algorithms
+from deap import creator, base, tools
 import random
 from consts import *
 from funODSS import DSS
 import time as t
 import numpy as np
 
+
 class FunAG:
     def __init__(self):
         self.dss = DSS()
-        self.dss.compileFile(linkFile)
-        self.barras = self.dss.BusNames()
-        #print(f"Barras trifásicas disponíveis para alocação: {self.barras}")
+        self.dss.compileFile(pasta, arquivo)
+        self.barras, _ = self.dss.BusNames()
         self.pmList = []
-        creator.create("fitnessMulti", base.Fitness, weights=(-1.0, ))
-        #Criando a classe do indivíduo
-        creator.create("estrIndiv", list, fitness = creator.fitnessMulti)
+        # Protege creator.create para evitar erro se já existir
+        if not hasattr(creator, "fitnessMulti"):
+            creator.create("fitnessMulti", base.Fitness, weights=(-1.0,))
+        if not hasattr(creator, "estrIndiv"):
+            creator.create("estrIndiv", list, fitness=creator.fitnessMulti)
         self.fobs = []
     
+    
+    def clone_indiv(self, ind):
+        import copy
+        return copy.deepcopy(ind)
 
-################==Cria um cromossomo (indivíduo) com valores de Corrente e barramento aleatórios==################
+
+    ################ Cria um cromossomo (indivíduo) com valores de Corrente e barramento aleatórios
     def criaCromBatCorr(self):
-        i1=[]
-        i2=[]
-        i3=[]
-        bus=[]
+        # Gera valores aleatórios de corrente para cada fase em cada instante de tempo
+        currents = np.array([random.uniform(-iMax, iMax) for _ in range(3*len(cc))], dtype=float)
         
-        ##  Dúvida, como calcular o valor máximo da corrente?  ##
-        self.imax = [self.pmList[0]/(baseKVmediaTensao/1.732050807),
-                self.pmList[1]/(baseKVmediaTensao/1.732050807),
-                self.pmList[2]/(baseKVmediaTensao/1.732050807)]  #Corrente máxima em cada fase (A), I = P/(V/√3)
-
-        for _ in range(len(cc)):
-            i1.append(random.uniform(-self.imax[0], self.imax[0]))
-            i2.append(random.uniform(-self.imax[1], self.imax[1]))
-            i3.append(random.uniform(-self.imax[2], self.imax[2]))
-
-        bus.append(random.randint(0, len(self.barras)-1))
-        indiv = i1 + i2 + i3 + bus
+        # Sorteia um barramento aleatório para alocação da bateria
+        bus_idx = random.randint(0, len(self.barras)-1)
+        
+        # Concatena os valores de corrente com o barramento em um único indivíduo
+        # O último gene será o índice do barramento (como float)
+        indiv = np.concatenate([currents, np.array([bus_idx], dtype=float)])
         return indiv
 
+    ################ Método de cruzamento aritmético
+    def cruzamentoAritmetico(self, indiv1, indiv2):
+        alfa = random.uniform(0, 1)
+        indiv1 = alfa * np.array(indiv1) + (1 - alfa) * np.array(indiv2)
+        indiv2 = alfa * np.array(indiv2) + (1 - alfa) * np.array(indiv1)
+        return indiv1, indiv2
 
-################==Método de mutação==################
-    def mutateFun(self, indiv):
-        novoIndiv = indiv
-        novoIndiv = self.criaCromBatSOC()
-        return novoIndiv    
-  
-
-################==Método de cruzamento BLX==################
+    ################ Método de cruzamento BLX
     def cruzamentoFunBLX(self, indiv1, indiv2):
-        newIndiv1 = indiv1
-        newIndiv2 = indiv2
-        #==Recebe um valor de alfa aleatório==#
-        alfa = random.uniform(0.3, 0.5)
-        #==Cria um novo indivíduo==#
+        # Trata-se de cruzamento in-place (DEAP espera que mate altere os indivíduos)
+        # Garante que operamos em listas/ndarrays mutáveis
+        # alfa controlando a expansão
+        alfa = random.uniform(0.2, 0.5)
+        last_gene_index = len(indiv1) - 1
+
         for gene in range(len(indiv1)):
-            #==Se não for o gene do barramento==#
-            if gene != len(indiv1) - 1:
-                #==calcula o delta==#
+            if gene != last_gene_index:
+                #Calcula delta para genes de corrente
                 delta = abs(indiv1[gene] - indiv2[gene])
-                #==Calcula o mínimo e o máximo==#
-                minGene = min(indiv1[gene], indiv2[gene]) - alfa*delta
-                maxGene = max(indiv1[gene], indiv2[gene]) + alfa*delta
-                #==Sorteia o novo gene entre o mínimo e o máximo==# 
-                newIndiv1[gene] = random.uniform(minGene, maxGene)
-                newIndiv2[gene] = random.uniform(minGene, maxGene)
-            #==Se for o gene do barramento==#
+                #Pega os valores maximo e mínimo para o gene
+                minGene = min(indiv1[gene], indiv2[gene]) - alfa * delta
+                maxGene = max(indiv1[gene], indiv2[gene]) + alfa * delta
+                #Gera novos valores para os genes sorteando dentro do intervalo
+                indiv1[gene] = random.uniform(minGene, maxGene)
+                indiv2[gene] = random.uniform(minGene, maxGene)
             else:
-                #==calcula o delta==#
+                # gene do barramento: tratar como índice inteiro
                 delta = abs(indiv1[gene] - indiv2[gene])
-                #==Calcula o mínimo e o máximo==#
-                minGene = int(min(indiv1[gene], indiv2[gene]) - alfa*delta)
-                maxGene = int(max(indiv1[gene], indiv2[gene]) + alfa*delta)
-                #==Sorteia o novo gene entre o mínimo e o máximo==# 
-                newIndiv1[gene] = random.randint(minGene, maxGene)
-                newIndiv2[gene] = random.randint(minGene, maxGene)
-            
-        #print(f"newIndiv1: {newIndiv1} - newIndiv2: {newIndiv2}")
-        return newIndiv1, newIndiv2
+                minGene = int(np.floor(min(indiv1[gene], indiv2[gene]) - alfa * delta))
+                maxGene = int(np.ceil(max(indiv1[gene], indiv2[gene]) + alfa * delta))
+                # clamp nos limites válidos dos índices dos barramentos
+                min_idx = max(0, minGene)
+                max_idx = min(len(self.barras) - 1, maxGene)
+                if min_idx > max_idx:
+                    # se por algum motivo os limites ficaram invertidos, iguala
+                    min_idx = max_idx = max(0, min(len(self.barras) - 1, int(round((indiv1[gene] + indiv2[gene]) / 2))))
+                indiv1[gene] = float(random.randint(min_idx, max_idx))
+                indiv2[gene] = float(random.randint(min_idx, max_idx))
+        # Retorna os indivíduos (modificados in-place)
+        return indiv1, indiv2
 
 
-################==Função objetivo para bateria com cromossomo de corrente==################
+    ################ Função objetivo para bateria com cromossomo de corrente
     def FOBbatCurrent(self, indiv):
-        
         n = len(cc)
-        #print(indiv)
-        # Separa as correntes por fase
-        i = [indiv[:n], indiv[n:2*n], indiv[2*n:3*n]]
+        # Array de correntes por fase e tempo [[fase A], [fase B], [fase C]]
+        currents = np.array([indiv[:n], indiv[n:2*n], indiv[2*n:3*n]])
         
-
-        # Verifica se o barramento existe
-        if indiv[3*n] < 0 or indiv[3*n] >= len(self.barras):
+        # Índice do barramento (força int)
+        bus_idx = int(indiv[-1])
+        # Verifica se o barramento é válido
+        if bus_idx < 0 or bus_idx >= len(self.barras):
             self.fobs.append(1000)
-            return 1000,
+            return (1000.,)
         
-        barra = str(self.barras[int(indiv[3*n])])
-        
-        self.dss.dssCircuit.SetActiveBus(barra)
-        kVBaseBarra = self.dss.dssBus.kVBase
-        #print(f"Barramento ativo: {barra} - kVBase: {kVBaseBarra}")
-        
-        
-        if round(kVBaseBarra,2) != round(baseKVmediaTensao/1.732050807,2):
+        # Ativa o barramento
+        barra = str(self.barras[bus_idx])
+        self.dss.dss.circuit.set_active_bus(barra)
+        kVBaseBarra = self.dss.dss.bus.kv_base
+        # Verifica tensão base do barramento
+        if round(kVBaseBarra, 2) != round(baseKVmediaTensao / 1.732050807, 2):
             self.fobs.append(1000)
-            return 1000,
+            return (1000.,)
         
-        # Verifica se os valores de corrente estão dentro dos limites
-        if any(abs(valI) > self.imax[fase] for fase in range(3) for valI in i[fase]):
-            dists = [0, 0, 0]
-            for fase in range(3):
-                for valI in i[fase]:
-                    if valI > 1000:
-                        dists[fase] = max(dists[fase], abs(valI-1000))
-            
-            return 300 + max(dists),
-        
-        # Passa o cromossomo de corrente para potencia
-        i = np.array(i)
-        pot = i * (baseKVmediaTensao/1.732050807)
-        
-        Ebat = max(self.pmList) * dT
-        e = np.zeros((3,n))
-        
+        # Verifica limites de corrente
+        maskAcima = []
+        # Cria máscaras para correntes acima do limite
         for fase in range(3):
-            for i in range(n):
-                if i == 0:  #==Primeiro valor de energia, considera q no indice -1 a bateria estava completamente carregada==#
-                    # Verifica se a bateria está sendo carregada ou descarregada
-                    if pot[fase][i] > 0:
-                        e[fase][i] = Ebat*0.8 + pot[fase][i]*dT*eficiencia
+            maskAcima.append(np.abs(currents[fase]) > iMax)
+        # Se alguma corrente ultrapassa o limite, retorna penalidade
+        if np.any(maskAcima):
+            dists = np.array([0.0, 0.0, 0.0])
+            for fase in range(3):
+                dists[fase] = float(np.max(np.abs(currents[fase][maskAcima[fase]]) - iMax)) if np.any(maskAcima[fase]) else 0.0
+            return (300.0 + float(np.max(dists)),)
+        
+        # Potência de cada fase [[kW fase A], [kW fase B], [kW fase C]] / P = I*V_fase 
+        pot = currents * (baseKVmediaTensao / 1.732050807)
+        
+        # Energia armazenada e SOC
+        e = np.zeros((3, n))
+        for fase in range(3):
+            for t_idx in range(n):
+                # Calcula energia armazenada em cada instante
+                # Considera SOC inicial de 80%
+                if t_idx == 0:
+                    # Carregamento
+                    if pot[fase][t_idx] > 0:
+                        e[fase][t_idx] = Ebat * 0.8 + pot[fase][t_idx] * dT * eficiencia
+                    # Descarregamento
                     else:
-                        e[fase][i] = Ebat*0.8 + pot[fase][i]*dT*(1/eficiencia)
+                        e[fase][t_idx] = Ebat * 0.8 + pot[fase][t_idx] * dT * (1.0 / eficiencia)
+                # Para os demais instantes
                 else:
-                    # Verifica se a bateria está sendo carregada ou descarregada
-                    if pot[fase][i] > 0:
-                        e[fase][i] = e[fase][i-1] + pot[fase][i]*dT*eficiencia
+                    # Carregamento
+                    if pot[fase][t_idx] > 0:
+                        e[fase][t_idx] = e[fase][t_idx - 1] + pot[fase][t_idx] * dT * eficiencia
+                    # Descarregamento
                     else:
-                        e[fase][i] = e[fase][i-1] + pot[fase][i]*dT*(1/eficiencia)
-
-        soc = e * (1/Ebat)
-
-        #print(f"Soc: {soc}")
+                        e[fase][t_idx] = e[fase][t_idx - 1] + pot[fase][t_idx] * dT * (1.0 / eficiencia)
         
-        #==Verifica se os valores de SOC estão dentro dos limites se não aplica penalidade==#
-        if any(valSoc < SOCmin or valSoc > SOCmax for fase in soc for valSoc in fase):
-            maiorDist = 0
-            for fase in soc:
-                for valSoc in fase:
-                    if valSoc < SOCmin:
-                        dist = abs(SOCmin - valSoc)
-                        maiorDist = max(maiorDist, dist)
-                    elif valSoc > SOCmax:
-                        dist = abs(valSoc - SOCmax)
-                        maiorDist = max(maiorDist, dist)
-            return 200 + maiorDist,  # Retorna um valor alto para a FOB
+        soc = e * (1.0 / Ebat)
         
+        # Verifica limites de SOC
+        # Cria máscaras para SOC acima e abaixo dos limites
+        maskAcimaSOC = soc > SOCmax
+        maskAbaixoSOC = soc < SOCmin
+        # Se algum SOC ultrapassa os limites, retorna penalidade
+        if np.any(maskAcimaSOC) or np.any(maskAbaixoSOC):
+            distAcima = soc[maskAcimaSOC] - SOCmax if np.any(maskAcimaSOC) else 0.0
+            distAbaixo = SOCmin - soc[maskAbaixoSOC] if np.any(maskAbaixoSOC) else 0.0
+            maiorDist = float(max(np.max(distAcima), np.max(distAbaixo)))
+            return (200.0 + maiorDist,)
+        
+        # Aloca e resolve para cada instante de tempo
         deseqs_max = []
-        
-        #========SE TUDO ESTIVER DENTRO DOS LIMITES ALOCA A BATERIA========#        
-        for i in range(n):
-            potsBat = [pot[0][i], pot[1][i], pot[2][i]]
-            # print(f"Potências: {potsBat}")
-            # print(f"Barramento: {barra}")
-            # print(f"cc: {cc[i]}")
-            
-            #==Aloca as potências no barramento e os bancos de capacitores e resolve o sistema==#
-            self.dss.alocaPot(barramento=barra, listaPoten=potsBat)
-            self.dss.solve(cc[i])
-        
-            #==Recebe as tensões de sequência e as coloca em um dicionário==#
-            dfSeqVoltages = self.dss.dfSeqVolt()
-            dicSecVoltages = dfSeqVoltages.to_dict(orient = 'list')
-            deseq = dicSecVoltages[' %V2/V1']
-            
+        for t_idx in range(n):
+            potsBat = [pot[0][t_idx], pot[1][t_idx], pot[2][t_idx]]
+            self.dss.alocaPot(barra=barra, listaPot=potsBat)
+            self.dss.solve(cc[t_idx])
+            deseq = self.dss.deseq()
             deseqs_max.append(max(deseq))
+    
         
-        #==Recebe o valor da função objetivo==#
         fobVal = max(deseqs_max)
-        
         if fobVal > 2.0:
-            #==Se o valor da FOB for maior que 2.0, retorna um valor alto para a FOB==#
-            # print('FOB:', fobVal)
             self.fobs.append(10 + fobVal)
-            # print(f"fob: {10 + fobVal} - Desequilíbrio máximo maior que 2.0.")
-            # print("Indiv:",indiv)
-            return 10 + fobVal,
+            return (10.0 + float(fobVal),)
         
-        # print('FOB:', fobVal)
-        self.fobs.append(fobVal)
-        # print(f"fob: {fobVal} - Desequilíbrio máximo dentro dos limites.")
-        return fobVal,
+        self.fobs.append(float(fobVal))
+        return (float(fobVal),)
 
 
-
-################==Algoritmo Genético==################
-    def execAg(self, pms, probCruz=0.9, probMut=0.1, numGen=700, numRep=1, numPop=200, numTorneio=3, eliteSize=10):
-        #==Inicio da contagem de tempo==#
-        t0 = t.time()
+    ################ Algoritmo Genético
+    def execAg(self, pms, probCruz=0.9, probMut=0.1, numGen=700, numRep=1, numPop=300, numTorneio=3, eliteSize=10):
         self.pmList = pms
         
-        #==Configuração do AG==#
+        self.dss.iniciaBESS()
+        # Configuração do AG
         toolbox = base.Toolbox()
+        toolbox.register("clone", self.clone_indiv)                                # registra função de clone personalizada
+        toolbox.register("mate", self.cruzamentoFunBLX)                            # cruzamento BLX
+        toolbox.register("mutate", tools.mutGaussian, mu=0, sigma=0.2, indpb=0.2)  # mutação gaussiana
+        toolbox.register("select", tools.selTournament, tournsize=numTorneio)      # seleção por torneio
+        toolbox.register("evaluate", self.FOBbatCurrent)                           # função objetivo
+
         dicMelhoresIndiv = {"cromossomos": [], "fobs": []}
-        toolbox.register("mate", self.cruzamentoFunBLX)  #Cruzamento BLX
-        toolbox.register("mutate", tools.mutGaussian, mu=0, sigma=0.2, indpb=0.2)  #Mutação Gaussiana
-        toolbox.register("select", tools.selTournament, tournsize=numTorneio)  #Seleção por torneio
-        toolbox.register("evaluate", self.FOBbatCurrent)  #Função objetivo para bateria com corrente variável
+        all_best_fobs = []  # lista de listas: best_fobs por repeticao
 
+        t0 = t.time()
         for rep in range(numRep):
-            print(f"{converte_tempo(t0)} - Iniciando execução do Algoritmo Genético... Repetição", rep + 1, "de", numRep)
+            print(f"{converte_tempo(t0)} - Iniciando execução do AG... Repetição {rep + 1} de {numRep}")
+            best_fobs = []  # lista de best_fobs desta repetição
+            
+            toolbox.register("indiv", tools.initIterate, creator.estrIndiv, self.criaCromBatCorr) # registra criação de indivíduo
+            toolbox.register("pop", tools.initRepeat, list, toolbox.indiv)                        # registra criação de população                 
+            populacao = toolbox.pop(n=numPop) # cria população inicial
 
-            toolbox.register("indiv", tools.initIterate, creator.estrIndiv, self.criaCromBatCorr)  #Cria indivíduo com Corrente e Barramento
-            toolbox.register("pop", tools.initRepeat, list, toolbox.indiv)  #Cria população
-            populacao = toolbox.pop(n=numPop)  #Tamanho da população
+            hof = tools.HallOfFame(1) # guarda melhor indivíduo
 
-            hof = tools.HallOfFame(1)  #Melhor indivíduo
-            elite_size = eliteSize  #Tamanho do elitismo
+            # Avalia população inicial
+            invalid_ind = [ind for ind in populacao if not ind.fitness.valid]
+            for ind in invalid_ind:
+                ind.fitness.values = toolbox.evaluate(ind)
 
-            #==Avalia população inicial==#
-            invalid_ind = [ind for ind in populacao if not ind.fitness.valid]  
-            fitnesses = map(toolbox.evaluate, invalid_ind)  #Avalia os indivíduos inválidos
-            for ind, fit in zip(invalid_ind, fitnesses):    #Atribui o valor da função objetivo ao indivíduo
-                ind.fitness.values = fit
-
-            best_fobs = []  #Lista para armazenar os melhores valores da FOB em cada geração
-
-            #==Início das gerações==#
+            print("===INICIO DAS GERAÇÕES===")
             for gen in range(numGen):
-                # Log da geração
                 if gen % 10 == 0:
-                    print(f"{converte_tempo(t0)} - Geração {gen + 1} de {numGen}... ")
-                    
-                # Elitismo
-                elite = tools.selBest(populacao, elite_size)  #Seleciona os melhores indivíduos
+                    print(f"{converte_tempo(t0)} - Geração {gen + 1} de {numGen}... / valor FOB: {melhor_fob if gen > 0 else 'N/A'}")
+                    # print(f"len pop: {len(populacao)}")
 
-                # Seleção + clone
-                offspring = toolbox.select(populacao, len(populacao) - elite_size)  #Seleciona os indivíduos para reprodução
-                offspring = list(map(toolbox.clone, offspring))  #Clona os indivíduos selecionados
+                # elitismo
+                elite = tools.selBest(populacao, eliteSize)
 
-                # Cruzamento
-                for child1, child2 in zip(offspring[::2], offspring[1::2]):
+                # seleção e clonagem
+                offspring = toolbox.select(populacao, len(populacao) - eliteSize) # seleciona o restante da população
+                offspring = list(map(toolbox.clone, offspring)) # clona os selecionados
+
+                # cruzamento
+                for c1, c2 in zip(offspring[::2], offspring[1::2]):
                     if random.random() < probCruz:
-                        toolbox.mate(child1, child2)
-                        del child1.fitness.values
-                        del child2.fitness.values
+                        toolbox.mate(c1, c2)
+                        del c1.fitness.values
+                        del c2.fitness.values
 
-                # Mutação
-                for mutant in offspring:
+                # mutação
+                for mut in offspring:
                     if random.random() < probMut:
-                        toolbox.mutate(mutant)
-                        del mutant.fitness.values
+                        toolbox.mutate(mut)
+                        del mut.fitness.values
 
-                # Avaliação dos novos
+                # avaliação dos novos
                 invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
-                fitnesses = map(toolbox.evaluate, invalid_ind)
-                for ind, fit in zip(invalid_ind, fitnesses):
-                    ind.fitness.values = fit
+                for ind in invalid_ind:
+                    ind.fitness.values = toolbox.evaluate(ind)
 
-                # Nova população
+                # nova população
                 populacao[:] = elite + offspring
                 hof.update(populacao)
-
-                # Log da geração
                 melhor_fob = hof[0].fitness.values[0]
                 best_fobs.append(melhor_fob)
-                #print(f"Geração {gen + 1}: Melhor FOB = {melhor_fob:.4f}")
 
-            dicMelhoresIndiv["cromossomos"].append(hof[0])
+            # guarda melhor (clonado) e seus fobs
+            dicMelhoresIndiv["cromossomos"].append(toolbox.clone(hof[0]))
             dicMelhoresIndiv["fobs"].append(hof[0].fitness.values[0])
+            all_best_fobs.append(best_fobs)
 
-            return populacao, None, dicMelhoresIndiv, best_fobs, self.barras
+        t1 = t.time()
+        print(f"Tempo total: {t1 - t0:.2f} s")
+
+        # Retorna: população final da última repetição, placeholder, dicionário, lista de best_fobs por repetição, barras
+        return populacao, None, dicMelhoresIndiv, all_best_fobs, self.barras

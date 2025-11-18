@@ -5,7 +5,7 @@ import tkinter as tk
 from funAG import FunAG as AG
 import pandas as pd
 from funODSS import DSS
-
+import threading as th
 
 #Limpa os dados da TreeView:
 def clearData(tv):
@@ -32,7 +32,7 @@ def FunBotaoRoda(tv, pma, pmc, pmb, ax, canva):
     
     #Verifica se algum dos valores de potência está vazio:
     if '' in pms:
-        pms = [1000, 1000, 1000]
+        pms = [1000, 1000, 1000] #kW
     
     #Limpa os dados da TreeView:
     clearData(tv)
@@ -50,22 +50,14 @@ def FunBotaoRoda(tv, pma, pmc, pmb, ax, canva):
     for valCC in cc:
         #Roda o DSS
         dss.clearAll()
-        dss.compileFile(linkFile)
+        dss.compileFile(pasta, arquivo)
         dss.solve(valCC)
-        
-        #Pega o DataFrame com as tensões de sequência:
-        df = dss.dfSeqVolt()
-        dicSecVoltages = df.to_dict(orient = 'list')
-        
-        #Pega os valores de desequilíbrio:
-        
-        deseq = dicSecVoltages[' %V2/V1']
-        #Adiciona o valor máximo de desequilíbrio na lista:
+        deseq = dss.deseq()
         deseqMax.append(max(deseq))
     
     
     #Chama o método de execução do algoritmo genético:
-    results, log, dicMelhoresIndiv, bestFobs, listaBarras = ag.execAg(pms=pms, numGen=200)
+    _, _, dicMelhoresIndiv, bestFobs, listaBarras = ag.execAg(pms=pms, numGen=NG, numPop=NP)
     
     #print(dicMelhoresIndiv)
     print("melhores fobs:", bestFobs)
@@ -76,14 +68,13 @@ def FunBotaoRoda(tv, pma, pmc, pmb, ax, canva):
     
     n = len(cc)
         
-    melhorBarra = listaBarras[listaCrom[0][3*n]]
+    melhorBarra = listaBarras[int(listaCrom[0][-1])]
     
     listaIA = listaCrom[0][:n]
     listaIB = listaCrom[0][n:2*n]
     listaIC = listaCrom[0][2*n:3*n]
 
-    i = [listaIA, listaIB, listaIC]
-    i = np.array(i)
+    i = np.array([listaIA, listaIB, listaIC])
     #==Calcula a potência de cada fase==#
     pots = i * (baseKVmediaTensao/1.732050807)
 
@@ -119,15 +110,13 @@ def FunBotaoRoda(tv, pma, pmc, pmb, ax, canva):
         # print(f"cc: {cc[i]}")
         
         #==Aloca as potências no barramento e os bancos de capacitores e resolve o sistema==#
-        dss.alocaPot(barramento=melhorBarra, listaPoten=potsBat)
+        dss.alocaPot(barra=melhorBarra, listaPot=potsBat)
         dss.solve(cc[i])
     
         #==Recebe as tensões de sequência e as coloca em um dicionário==#
-        dfSeqVoltages = dss.dfSeqVolt()
-        dicSecVoltages = dfSeqVoltages.to_dict(orient = 'list')
-        deseq = dicSecVoltages[' %V2/V1']
-        
+        deseq = dss.deseq()
         deseqs_max.append(max(deseq))
+        
     
     #Coluna de horas:
     dicResultadoAg['Hora'] = [i for i in range(n)]
@@ -179,3 +168,10 @@ def FunBotaoRoda(tv, pma, pmc, pmb, ax, canva):
     canva.draw()
     
     return None
+
+#Função que executa o AG em uma thread separada:
+def run_ag_in_thread(tv, pma, pmb, pmc, ax, canva):
+    #Executa o AG em uma thread separada para não travar a GUI.
+    thread = th.Thread(target=FunBotaoRoda, args=(tv, pma, pmc, pmb, ax, canva))
+    thread.daemon = True
+    thread.start()
