@@ -6,10 +6,35 @@ import time as t
 import numpy as np
 
 
-class FunAG:
-    def __init__(self):
+def calculaSOC(SOC_n, corrente):
+    pot_n = corrente * (baseKVmediaTensao / 1.732050807)
+    energia_n = SOC_n * Ebat
+    if pot_n > 0:
+        # Carregamento
+        energia_n1 = energia_n + (pot_n * dT * eficiencia)
+    else:
+        # Descarregamento
+        energia_n1 = energia_n + (pot_n * dT / eficiencia)
+    SOC_n1 = energia_n1 / Ebat
+    return SOC_n1
+
+
+def calculaIupIdown(SOC_atual):
+    dSOCup = SOCmax - SOC_atual
+    dSOCdown = SOCmin - SOC_atual
+    Pup = (dSOCup * Ebat) / (dT * eficiencia)
+    Pdown = (dSOCdown * Ebat * eficiencia) / dT
+    Iup = Pup / (baseKVmediaTensao / 1.732050807)
+    Idown = Pdown / (baseKVmediaTensao / 1.732050807)
+    return Iup, Idown
+
+
+class FunAG():
+    def __init__(self, sistema):
         self.dss = DSS()
-        self.dss.compileFile(pasta, arquivo)
+        # print(sistemas[sistema]['pasta'])
+        # print(sistemas[sistema]['arquivo'])
+        self.dss.compileFile(sistemas[sistema]['pasta'], sistemas[sistema]['arquivo'])
         self.barras, _ = self.dss.BusNames()
         self.pmList = []
         # Protege creator.create para evitar erro se já existir
@@ -27,8 +52,34 @@ class FunAG:
 
     ################ Cria um cromossomo (indivíduo) com valores de Corrente e barramento aleatórios
     def criaCromBatCorr(self):
+        ia = []
+        ib = []
+        ic = []
+        n = len(cc)  # Número de instantes de tempo
+        SOCini = 0.1  # Estado de carga inicial (10%)
+        for gene in range(n):
+            if gene == 0:
+                Iup, Idown = calculaIupIdown(SOCini)
+                ia.append(random.uniform(Idown, Iup))
+                ib.append(random.uniform(Idown, Iup))
+                ic.append(random.uniform(Idown, Iup))
+                SOCan = calculaSOC(SOCini, ia[-1])
+                SOCbn = calculaSOC(SOCini, ib[-1])
+                SOCcn = calculaSOC(SOCini, ic[-1])
+            else:
+                Iup_a, Idown_a = calculaIupIdown(SOCan)
+                Iup_b, Idown_b = calculaIupIdown(SOCbn)
+                Iup_c, Idown_c = calculaIupIdown(SOCcn)
+                ia.append(random.uniform(Idown_a, Iup_a))
+                ib.append(random.uniform(Idown_b, Iup_b))
+                ic.append(random.uniform(Idown_c, Iup_c))
+                SOCan = calculaSOC(SOCan, ia[-1])
+                SOCbn = calculaSOC(SOCbn, ib[-1])
+                SOCcn = calculaSOC(SOCcn, ic[-1])
+        
+        
         # Gera valores aleatórios de corrente para cada fase em cada instante de tempo
-        currents = np.array([random.uniform(-iMax, iMax) for _ in range(3*len(cc))], dtype=float)
+        currents = np.array(ia + ib + ic, dtype=float)
         
         # Sorteia um barramento aleatório para alocação da bateria
         bus_idx = random.randint(0, len(self.barras)-1)
@@ -102,55 +153,8 @@ class FunAG:
             self.fobs.append(1000)
             return (1000.,)
         
-        # Verifica limites de corrente
-        maskAcima = []
-        # Cria máscaras para correntes acima do limite
-        for fase in range(3):
-            maskAcima.append(np.abs(currents[fase]) > iMax)
-        # Se alguma corrente ultrapassa o limite, retorna penalidade
-        if np.any(maskAcima):
-            dists = np.array([0.0, 0.0, 0.0])
-            for fase in range(3):
-                dists[fase] = float(np.max(np.abs(currents[fase][maskAcima[fase]]) - iMax)) if np.any(maskAcima[fase]) else 0.0
-            return (300.0 + float(np.max(dists)),)
-        
         # Potência de cada fase [[kW fase A], [kW fase B], [kW fase C]] / P = I*V_fase 
         pot = currents * (baseKVmediaTensao / 1.732050807)
-        
-        # Energia armazenada e SOC
-        e = np.zeros((3, n))
-        for fase in range(3):
-            for t_idx in range(n):
-                # Calcula energia armazenada em cada instante
-                # Considera SOC inicial de 80%
-                if t_idx == 0:
-                    # Carregamento
-                    if pot[fase][t_idx] > 0:
-                        e[fase][t_idx] = Ebat * 0.8 + pot[fase][t_idx] * dT * eficiencia
-                    # Descarregamento
-                    else:
-                        e[fase][t_idx] = Ebat * 0.8 + pot[fase][t_idx] * dT * (1.0 / eficiencia)
-                # Para os demais instantes
-                else:
-                    # Carregamento
-                    if pot[fase][t_idx] > 0:
-                        e[fase][t_idx] = e[fase][t_idx - 1] + pot[fase][t_idx] * dT * eficiencia
-                    # Descarregamento
-                    else:
-                        e[fase][t_idx] = e[fase][t_idx - 1] + pot[fase][t_idx] * dT * (1.0 / eficiencia)
-        
-        soc = e * (1.0 / Ebat)
-        
-        # Verifica limites de SOC
-        # Cria máscaras para SOC acima e abaixo dos limites
-        maskAcimaSOC = soc > SOCmax
-        maskAbaixoSOC = soc < SOCmin
-        # Se algum SOC ultrapassa os limites, retorna penalidade
-        if np.any(maskAcimaSOC) or np.any(maskAbaixoSOC):
-            distAcima = soc[maskAcimaSOC] - SOCmax if np.any(maskAcimaSOC) else 0.0
-            distAbaixo = SOCmin - soc[maskAbaixoSOC] if np.any(maskAbaixoSOC) else 0.0
-            maiorDist = float(max(np.max(distAcima), np.max(distAbaixo)))
-            return (200.0 + maiorDist,)
         
         # Aloca e resolve para cada instante de tempo
         deseqs_max = []
@@ -163,9 +167,9 @@ class FunAG:
     
         
         fobVal = max(deseqs_max)
-        if fobVal > 2.0:
-            self.fobs.append(10 + fobVal)
-            return (10.0 + float(fobVal),)
+        # if fobVal > 2.0:
+        #     self.fobs.append(10 + fobVal)
+        #     return (10.0 + float(fobVal),)
         
         self.fobs.append(float(fobVal))
         return (float(fobVal),)
@@ -189,6 +193,7 @@ class FunAG:
 
         t0 = t.time()
         for rep in range(numRep):
+            print("\n","========================================")
             print(f"{converte_tempo(t0)} - Iniciando execução do AG... Repetição {rep + 1} de {numRep}")
             best_fobs = []  # lista de best_fobs desta repetição
             

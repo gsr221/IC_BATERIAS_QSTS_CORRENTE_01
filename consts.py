@@ -1,8 +1,8 @@
 import time as t
 
 #==diretorios dos arquivos==#
-pasta = "13Bus"
-arquivo = "IEEE13Nodeckt.dss"
+# pasta = "13Bus"
+# arquivo = "IEEE13Nodeckt.dss"
 
 #==Dados da bateria==#
 pMax = 1000  # kW
@@ -14,8 +14,9 @@ eficiencia = 0.95
 
 #==Dados do sistema==#
 # barra = 671
-NG = 500
-NP = 1000
+NG = 150
+NP = 500
+NREP = 100
 dT = 1  # Intervalo de tempo em horas
 baseKVmediaTensao = 4.16  # kV media tensão base do sistema
 
@@ -82,6 +83,15 @@ cc2 = [
     1.00,
     0.95
 ]
+
+
+sistemas = {
+    'IEEE 4 bus':{'pasta': '4Bus-DY-Bal', 'arquivo': '4Bus-DY-Bal.DSS'},
+    'IEEE 13 bus':{'pasta': '13Bus', 'arquivo': 'IEEE13Nodeckt.dss'},
+    'IEEE 34 bus':{'pasta': '34Bus', 'arquivo': 'RUN_IEEE34Mod1.DSS'},
+    'IEEE 123 bus':{'pasta': '123Bus', 'arquivo': 'RUN_IEEE123Bus.DSS'}
+}
+
 
 def converte_tempo(t0):
     # Fim do tempo
