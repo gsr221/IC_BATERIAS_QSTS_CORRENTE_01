@@ -11,13 +11,22 @@ class DSS():
         self.dss = pdss.DSS()
         self.dssTools = dss_tools
         self.dssTools.update_dss(self.dss)
-        
-        
+        self._pasta = None
+        self._arquivo = None
+          
     def compileFile(self, paste, file):
+        self._pasta = paste
+        self._arquivo = file
         script_path = os.path.dirname(os.path.abspath(__file__))
         dss_file = pathlib.Path(script_path).joinpath(paste, file)
         self.dss.text(f"compile [{dss_file}]")
         
+    def get_pasta(self):
+        return self._pasta
+
+    def get_arquivo(self):
+        return self._arquivo
+
     def clearAll(self):
         self.dss.text("ClearAll")
         
@@ -35,7 +44,6 @@ class DSS():
                 tPBuses.append(bus)
         
         return tPBuses, busesNames
-    
     
     def retornaLoadsDF(self):
         return self.dssTools.model.loads_df
@@ -57,8 +65,7 @@ class DSS():
         # Modifica a potência da bateria em cada fase
         for fase in range(3):
             self.dssTools.model.edit_element("load", f"newload{fase+1}", {"bus1":f"{barra}.{fase+1}", "kV":f"{round(kVBaseBarra, 2)}", "kW":f"{listaPot[fase]}"})
-
-            
+         
     def deseq(self):
         busesNames = self.BusNames()[0]
         v1 = []

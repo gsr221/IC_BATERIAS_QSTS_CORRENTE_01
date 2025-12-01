@@ -15,12 +15,9 @@ eficiencia = 0.95
 #==Dados do sistema==#
 # barra = 671
 NG = 150
-NP = 500
-NREP = 100
+NP = 6
+NREP = 1
 dT = 1  # Intervalo de tempo em horas
-baseKVmediaTensao = 4.16  # kV media tensão base do sistema
-
-flag = True
 
 cc = [
     0.40,  # 00h
@@ -49,47 +46,11 @@ cc = [
     0.55   # 23h
 ]
 
-cc1 = [
-    0.40,  # 00h
-    0.35,  # 01h
-    0.30,  # 02h
-    0.28,  # 03h
-    0.30,  # 04h
-    0.40,  # 05h
-    0.55,  # 06h
-    0.70,  # 07h
-    0.75,  # 08h
-    0.65,  # 09h
-    0.60,
-    1.00,
-    0.95,
-    0,
-    0
-    
-]
-
-cc2 = [
-    0.40,  # 00h
-    0.35,  # 01h
-    0.30,  # 02h
-    0.28,  # 03h
-    0.30,  # 04h
-    0.40,  # 05h
-    0.55,  # 06h
-    0.70,  # 07h
-    0.75,  # 08h
-    0.65,  # 09h
-    0.60,
-    1.00,
-    0.95
-]
-
-
 sistemas = {
-    'IEEE 4 bus':{'pasta': '4Bus-DY-Bal', 'arquivo': '4Bus-DY-Bal.DSS'},
-    'IEEE 13 bus':{'pasta': '13Bus', 'arquivo': 'IEEE13Nodeckt.dss'},
-    'IEEE 34 bus':{'pasta': '34Bus', 'arquivo': 'RUN_IEEE34Mod1.DSS'},
-    'IEEE 123 bus':{'pasta': '123Bus', 'arquivo': 'RUN_IEEE123Bus.DSS'}
+    'IEEE 4 bus':{'pasta': '4Bus-DY-Bal', 'arquivo': '4Bus-DY-Bal.DSS', 'baseKVmediaTensao': 4.16},
+    'IEEE 13 bus':{'pasta': '13Bus', 'arquivo': 'IEEE13Nodeckt.dss', 'baseKVmediaTensao': 4.16},
+    'IEEE 34 bus':{'pasta': '34Bus', 'arquivo': 'RUN_IEEE34Mod1.DSS', 'baseKVmediaTensao': 24.9},
+    'IEEE 123 bus':{'pasta': '123Bus', 'arquivo': 'RUN_IEEE123Bus.DSS', 'baseKVmediaTensao': 4.16}
 }
 
 

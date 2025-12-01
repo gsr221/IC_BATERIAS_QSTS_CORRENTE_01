@@ -4,254 +4,405 @@ from consts import *
 from funODSS import DSS
 import time as t
 import numpy as np
+import math
+import multiprocessing as mp
+import os
+
+# ------------------------
+# Infra de multiprocessing
+# ------------------------
+# Cada processo terá seu próprio ambiente do OpenDSS para evitar conflitos.
+_WORKER = {
+    "dss": None,
+    "kv_base_media_tensao": None,
+    "barras": None,
+}
 
 
-def calculaSOC(SOC_n, corrente):
-    pot_n = corrente * (baseKVmediaTensao / 1.732050807)
-    energia_n = SOC_n * Ebat
+def _init_worker(pasta: str, arquivo: str, kv_base_media_tensao: float):
+    '''Cria o ambiente DSS para cada processo.
+    
+    Args:
+        pasta: Pasta do arquivo DSS.
+        arquivo: Nome do arquivo DSS.
+        kv_base_media_tensao: Tensão base da média tensão do sistema em estudo.
+    '''
+    # Inicializa um DSS dedicado por processo
+    dss_local = DSS()
+    dss_local.compileFile(pasta, arquivo)
+    # Aloca os elementos fixos (BESS) neste processo
+    dss_local.iniciaBESS()
+    barras_tp, _ = dss_local.BusNames()
+
+    _WORKER["dss"] = dss_local
+    _WORKER["kv_base_media_tensao"] = kv_base_media_tensao
+    _WORKER["barras"] = barras_tp
+
+
+def _evaluate_individual_parallel(indiv: list) -> tuple[float]:
+    '''Função objetivo para avaliação paralela de um indivíduo.
+    
+    Args:
+        indiv: Cromossomo representando as correntes e o barramento.
+        
+    Returns:
+        (fob_val,): Tupla contendo o valor da função objetivo (FOB).
+    '''
+    # Avaliação independente do estado da classe; usa o DSS do processo
+    try:
+        # Importante: acessa o DSS específico do processo
+        dss = _WORKER["dss"]
+        kv_mt = _WORKER["kv_base_media_tensao"]
+        barras = _WORKER["barras"]
+
+        n = len(cc)
+        bus_idx = int(indiv[-1])
+        # Verifica se o índice do barramento é válido
+        if not (0 <= bus_idx < len(barras)):
+            return (2000.0,)
+
+        barra = barras[bus_idx]
+        dss.dss.circuit.set_active_bus(barra)
+        kv_base_barra = dss.dss.bus.kv_base
+        # Verifica se a tensão base do barramento é compatível
+        if not math.isclose(kv_base_barra, kv_mt / math.sqrt(3), rel_tol=1e-2):
+            return (1000.0,)
+        # Separa as correntes por fase
+        currents = np.array([indiv[:n], indiv[n:2*n], indiv[2*n:3*n]])
+        # Potência de cada fase (P = I * V_fase)
+        pot = currents * kv_base_barra
+
+        deseqs_max = []
+        # Simula para cada instante de tempo
+        for t_idx in range(n):
+            pots_bat = [pot[0][t_idx], pot[1][t_idx], pot[2][t_idx]]
+            dss.alocaPot(barra=barra, listaPot=pots_bat)
+            dss.solve(cc[t_idx])
+            deseq = dss.deseq()
+            deseqs_max.append(float(np.max(deseq)))
+        # Calcula o valor da função objetivo (FOB)
+        fob_val = float(max(deseqs_max)) if deseqs_max else 1e6
+        return (fob_val,)
+    except Exception:
+        # Em caso de erro inesperado, retorna um valor ruim para não travar o pool
+        return (1e6,)
+
+
+def calculaSOC(soc_n: float, corrente: float, base_kv_media_tensao: float) -> float:
+    """
+    Calcula o Estado de Carga (SOC) do BESS para o próximo instante de tempo.
+
+    Args:
+        soc_n: Estado de carga n.
+        corrente: Corrente de carga/descarga.
+        base_kv_media_tensao: Tensão base da média tensão.
+
+    Returns:
+        soc_n1: Estado de carga (SOC) em n+1.
+    """
+    # Calcula a potência no instante n
+    pot_n = corrente * (base_kv_media_tensao / math.sqrt(3))
+    # Calcula a energia no instante n
+    energia_n = soc_n * Ebat
+    # Atualiza a energia e o SOC para o próximo instante
     if pot_n > 0:
         # Carregamento
         energia_n1 = energia_n + (pot_n * dT * eficiencia)
     else:
         # Descarregamento
         energia_n1 = energia_n + (pot_n * dT / eficiencia)
-    SOC_n1 = energia_n1 / Ebat
-    return SOC_n1
+    soc_n1 = energia_n1 / Ebat
+    return soc_n1
 
 
-def calculaIupIdown(SOC_atual):
-    dSOCup = SOCmax - SOC_atual
-    dSOCdown = SOCmin - SOC_atual
-    Pup = (dSOCup * Ebat) / (dT * eficiencia)
-    Pdown = (dSOCdown * Ebat * eficiencia) / dT
-    Iup = Pup / (baseKVmediaTensao / 1.732050807)
-    Idown = Pdown / (baseKVmediaTensao / 1.732050807)
-    return Iup, Idown
+def calculaIupIdown(soc_atual: float, base_kv_media_tensao: float) -> tuple[float, float]:
+    """
+    Calcula os limites superior (Iup) e inferior (Idown) de corrente para o BESS.
+
+    Args:
+        soc_atual: Estado de carga n.
+        base_kv_media_tensao: Tensão base da média tensão.
+
+    Returns:
+        (i_up, i_down): Uma tupla contendo (Iup, Idown).
+    """
+    # Cálculo das variações de SOC permitidas
+    d_soc_up = SOCmax - soc_atual
+    d_soc_down = SOCmin - soc_atual
+    # Cálculo das potências máximas de carga e descarga
+    p_up = (d_soc_up * Ebat) / (dT * eficiencia)
+    p_down = (d_soc_down * Ebat * eficiencia) / dT
+    # Cálculo das correntes máximas de carga e descarga
+    i_up = p_up / (base_kv_media_tensao / math.sqrt(3))
+    i_down = p_down / (base_kv_media_tensao / math.sqrt(3))
+    return i_up, i_down
 
 
 class FunAG():
-    def __init__(self, sistema):
+    """
+    Classe que encapsula a lógica do Algoritmo Genético para otimização de BESS.
+    """
+    def __init__(self, sistema: str):
+        # Inicializa o ambiente DSS e configura o sistema
         self.dss = DSS()
-        # print(sistemas[sistema]['pasta'])
-        # print(sistemas[sistema]['arquivo'])
+        self.kv_base_media_tensao = sistemas[sistema]['baseKVmediaTensao']
         self.dss.compileFile(sistemas[sistema]['pasta'], sistemas[sistema]['arquivo'])
         self.barras, _ = self.dss.BusNames()
         self.pmList = []
-        # Protege creator.create para evitar erro se já existir
+        
+        # Protege a criação dos tipos para evitar erros em re-execuções.
         if not hasattr(creator, "fitnessMulti"):
             creator.create("fitnessMulti", base.Fitness, weights=(-1.0,))
         if not hasattr(creator, "estrIndiv"):
             creator.create("estrIndiv", list, fitness=creator.fitnessMulti)
+        
         self.fobs = []
     
-    
-    def clone_indiv(self, ind):
-        import copy
-        return copy.deepcopy(ind)
+    def _gerar_correntes_fase(self, n_instantes: int, soc_inicial: float) -> list[float]:
+        """Gera a sequência de correntes para uma única fase.
+        
+        Args:
+            n_instantes: Número de instantes de tempo.
+            soc_inicial: Estado de carga inicial da BESS.
+        
+        Returns:
+            correntes: Lista de correntes geradas para a fase.
+        """
+        correntes = []
+        soc_atual = soc_inicial
+        for _ in range(n_instantes):
+            i_up, i_down = calculaIupIdown(soc_atual, self.kv_base_media_tensao)
+            corrente = random.uniform(i_down, i_up)
+            correntes.append(corrente)
+            soc_atual = calculaSOC(soc_atual, corrente, self.kv_base_media_tensao)
+        return correntes
 
+    def cria_individuo(self) -> list:
+        """Cria um cromossomo (indivíduo) com valores de Corrente e barramento aleatórios.
+        
+        Returns:
+            indiv: Indivíduo criado.
+        """
+        n_instantes = len(cc)
+        soc_inicial = 0.1  # Estado de carga inicial (10%)
 
-    ################ Cria um cromossomo (indivíduo) com valores de Corrente e barramento aleatórios
-    def criaCromBatCorr(self):
-        ia = []
-        ib = []
-        ic = []
-        n = len(cc)  # Número de instantes de tempo
-        SOCini = 0.1  # Estado de carga inicial (10%)
-        for gene in range(n):
-            if gene == 0:
-                Iup, Idown = calculaIupIdown(SOCini)
-                ia.append(random.uniform(Idown, Iup))
-                ib.append(random.uniform(Idown, Iup))
-                ic.append(random.uniform(Idown, Iup))
-                SOCan = calculaSOC(SOCini, ia[-1])
-                SOCbn = calculaSOC(SOCini, ib[-1])
-                SOCcn = calculaSOC(SOCini, ic[-1])
-            else:
-                Iup_a, Idown_a = calculaIupIdown(SOCan)
-                Iup_b, Idown_b = calculaIupIdown(SOCbn)
-                Iup_c, Idown_c = calculaIupIdown(SOCcn)
-                ia.append(random.uniform(Idown_a, Iup_a))
-                ib.append(random.uniform(Idown_b, Iup_b))
-                ic.append(random.uniform(Idown_c, Iup_c))
-                SOCan = calculaSOC(SOCan, ia[-1])
-                SOCbn = calculaSOC(SOCbn, ib[-1])
-                SOCcn = calculaSOC(SOCcn, ic[-1])
+        # Gera correntes para cada fase
+        correntes_a = self._gerar_correntes_fase(n_instantes, soc_inicial)
+        correntes_b = self._gerar_correntes_fase(n_instantes, soc_inicial)
+        correntes_c = self._gerar_correntes_fase(n_instantes, soc_inicial)
         
+        # Concatena as correntes
+        correntes_todas = np.array(correntes_a + correntes_b + correntes_c, dtype=float)
         
-        # Gera valores aleatórios de corrente para cada fase em cada instante de tempo
-        currents = np.array(ia + ib + ic, dtype=float)
-        
-        # Sorteia um barramento aleatório para alocação da bateria
-        bus_idx = random.randint(0, len(self.barras)-1)
+        # Sorteia um barramento aleatório
+        bus_idx = float(random.randint(0, len(self.barras) - 1))
         
         # Concatena os valores de corrente com o barramento em um único indivíduo
-        # O último gene será o índice do barramento (como float)
-        indiv = np.concatenate([currents, np.array([bus_idx], dtype=float)])
-        return indiv
+        indiv = np.concatenate([correntes_todas, [bus_idx]])
+        return creator.estrIndiv(indiv)
 
-    ################ Método de cruzamento aritmético
-    def cruzamentoAritmetico(self, indiv1, indiv2):
-        alfa = random.uniform(0, 1)
-        indiv1 = alfa * np.array(indiv1) + (1 - alfa) * np.array(indiv2)
-        indiv2 = alfa * np.array(indiv2) + (1 - alfa) * np.array(indiv1)
-        return indiv1, indiv2
-
-    ################ Método de cruzamento BLX
-    def cruzamentoFunBLX(self, indiv1, indiv2):
-        # Trata-se de cruzamento in-place (DEAP espera que mate altere os indivíduos)
-        # Garante que operamos em listas/ndarrays mutáveis
-        # alfa controlando a expansão
+    def cruzamento_blx(self, indiv1: list, indiv2: list) -> tuple[list, list]:
+        """
+        Realiza o cruzamento BLX-alpha.
+        Este método modifica os indivíduos in-place.
+        Args:
+            indiv1: Primeiro indivíduo.
+            indiv2: Segundo indivíduo.
+        Returns:
+            (indiv1, indiv2): Indivíduos resultantes do cruzamento.
+        """
         alfa = random.uniform(0.2, 0.5)
         last_gene_index = len(indiv1) - 1
 
-        for gene in range(len(indiv1)):
-            if gene != last_gene_index:
-                #Calcula delta para genes de corrente
-                delta = abs(indiv1[gene] - indiv2[gene])
-                #Pega os valores maximo e mínimo para o gene
-                minGene = min(indiv1[gene], indiv2[gene]) - alfa * delta
-                maxGene = max(indiv1[gene], indiv2[gene]) + alfa * delta
-                #Gera novos valores para os genes sorteando dentro do intervalo
-                indiv1[gene] = random.uniform(minGene, maxGene)
-                indiv2[gene] = random.uniform(minGene, maxGene)
+        for i in range(len(indiv1)):
+            delta = abs(indiv1[i] - indiv2[i])
+            min_gene = min(indiv1[i], indiv2[i]) - alfa * delta
+            max_gene = max(indiv1[i], indiv2[i]) + alfa * delta
+
+            if i != last_gene_index:
+                # Genes de corrente
+                indiv1[i] = random.uniform(min_gene, max_gene)
+                indiv2[i] = random.uniform(min_gene, max_gene)
             else:
-                # gene do barramento: tratar como índice inteiro
-                delta = abs(indiv1[gene] - indiv2[gene])
-                minGene = int(np.floor(min(indiv1[gene], indiv2[gene]) - alfa * delta))
-                maxGene = int(np.ceil(max(indiv1[gene], indiv2[gene]) + alfa * delta))
-                # clamp nos limites válidos dos índices dos barramentos
-                min_idx = max(0, minGene)
-                max_idx = min(len(self.barras) - 1, maxGene)
+                # Gene do barramento (índice inteiro)
+                min_idx = max(0, int(np.floor(min_gene)))
+                max_idx = min(len(self.barras) - 1, int(np.ceil(max_gene)))
+                
                 if min_idx > max_idx:
-                    # se por algum motivo os limites ficaram invertidos, iguala
-                    min_idx = max_idx = max(0, min(len(self.barras) - 1, int(round((indiv1[gene] + indiv2[gene]) / 2))))
-                indiv1[gene] = float(random.randint(min_idx, max_idx))
-                indiv2[gene] = float(random.randint(min_idx, max_idx))
-        # Retorna os indivíduos (modificados in-place)
+                    # Garante que os limites sejam válidos
+                    min_idx = max_idx = max(0, min(len(self.barras) - 1, int(round((indiv1[i] + indiv2[i]) / 2))))
+                
+                indiv1[i] = float(random.randint(min_idx, max_idx))
+                indiv2[i] = float(random.randint(min_idx, max_idx))
+        
         return indiv1, indiv2
 
-
-    ################ Função objetivo para bateria com cromossomo de corrente
-    def FOBbatCurrent(self, indiv):
+    def avalia_individuo(self, indiv: list) -> tuple[float]:
+        """Função objetivo: avalia um indivíduo calculando o desequilíbrio máximo (sem paralelismo).
+        Args:
+            indiv: Cromossomo representando as correntes e o barramento.
+        Returns:
+            (fob_val,): Tupla contendo o valor da função objetivo (FOB).
+        """
         n = len(cc)
-        # Array de correntes por fase e tempo [[fase A], [fase B], [fase C]]
-        currents = np.array([indiv[:n], indiv[n:2*n], indiv[2*n:3*n]])
         
-        # Índice do barramento (força int)
+        # Obtém o índice do barramento
         bus_idx = int(indiv[-1])
-        # Verifica se o barramento é válido
-        if bus_idx < 0 or bus_idx >= len(self.barras):
-            self.fobs.append(1000)
-            return (1000.,)
+        if not (0 <= bus_idx < len(self.barras)):
+            self.fobs.append(2000.0)
+            return (2000.0,)
         
-        # Ativa o barramento
-        barra = str(self.barras[bus_idx])
+        barra = self.barras[bus_idx]
         self.dss.dss.circuit.set_active_bus(barra)
-        kVBaseBarra = self.dss.dss.bus.kv_base
-        # Verifica tensão base do barramento
-        if round(kVBaseBarra, 2) != round(baseKVmediaTensao / 1.732050807, 2):
-            self.fobs.append(1000)
-            return (1000.,)
+        kv_base_barra = self.dss.dss.bus.kv_base
         
-        # Potência de cada fase [[kW fase A], [kW fase B], [kW fase C]] / P = I*V_fase 
-        pot = currents * (baseKVmediaTensao / 1.732050807)
+        # Verifica se a tensão base do barramento é compatível
+        if not math.isclose(kv_base_barra, self.kv_base_media_tensao / math.sqrt(3), rel_tol=1e-2):
+            self.fobs.append(1000.0)
+            return (1000.0,)
         
-        # Aloca e resolve para cada instante de tempo
+        # Separa as correntes por fase
+        currents = np.array([indiv[:n], indiv[n:2*n], indiv[2*n:3*n]])
+        # Potência de cada fase (P = I * V_fase)
+        pot = currents * kv_base_barra
+        
         deseqs_max = []
+        # Simula para cada instante de tempo
         for t_idx in range(n):
-            potsBat = [pot[0][t_idx], pot[1][t_idx], pot[2][t_idx]]
-            self.dss.alocaPot(barra=barra, listaPot=potsBat)
+            pots_bat = [pot[0][t_idx], pot[1][t_idx], pot[2][t_idx]]
+            self.dss.alocaPot(barra=barra, listaPot=pots_bat)
             self.dss.solve(cc[t_idx])
             deseq = self.dss.deseq()
             deseqs_max.append(max(deseq))
-    
-        
-        fobVal = max(deseqs_max)
-        # if fobVal > 2.0:
-        #     self.fobs.append(10 + fobVal)
-        #     return (10.0 + float(fobVal),)
-        
-        self.fobs.append(float(fobVal))
-        return (float(fobVal),)
 
+        # Calcula o valor da função objetivo (FOB)
+        fob_val = max(deseqs_max)
+        self.fobs.append(float(fob_val))
+        return (float(fob_val),)
 
-    ################ Algoritmo Genético
-    def execAg(self, pms, probCruz=0.9, probMut=0.1, numGen=700, numRep=1, numPop=300, numTorneio=3, eliteSize=10):
+    def execAg(self, pms, prob_cruz: float =0.9, prob_mut: float =0.1, 
+               num_gen: int = 700, num_rep: int = 1, num_pop: int = 300, num_torneio: int = 3, 
+               elite_size: int = 10, n_jobs: int | None = None, parallel: bool = True):
+        
+        """
+        Args:
+            pms: Parâmetros do modelo.
+            prob_cruz: Probabilidade de cruzamento.
+            prob_mut: Probabilidade de mutação.
+            num_gen: Número de gerações.
+            num_rep: Número de repetições.
+            num_pop: Tamanho da população.
+            num_torneio: Tamanho do torneio para seleção.
+            elite_size: Tamanho da elite.
+            n_jobs: Número de trabalhos para paralelismo.
+            parallel: Indica se a avaliação será paralela.
+        Returns:
+            populacao: População final.
+            None: Placeholder para compatibilidade.
+            dic_melhores_indiv: Dicionário com os melhores indivíduos e seus FOBs
+            all_best_fobs: Lista com os melhores FOBs de todas as repetições.
+            self.barras: Lista de barramentos de 3 fases.
+        """
+
         self.pmList = pms
-        
         self.dss.iniciaBESS()
-        # Configuração do AG
-        toolbox = base.Toolbox()
-        toolbox.register("clone", self.clone_indiv)                                # registra função de clone personalizada
-        toolbox.register("mate", self.cruzamentoFunBLX)                            # cruzamento BLX
-        toolbox.register("mutate", tools.mutGaussian, mu=0, sigma=0.2, indpb=0.2)  # mutação gaussiana
-        toolbox.register("select", tools.selTournament, tournsize=numTorneio)      # seleção por torneio
-        toolbox.register("evaluate", self.FOBbatCurrent)                           # função objetivo
 
-        dicMelhoresIndiv = {"cromossomos": [], "fobs": []}
-        all_best_fobs = []  # lista de listas: best_fobs por repeticao
+        # --- Configuração do Algoritmo Genético com DEAP ---
+        toolbox = base.Toolbox()
+        toolbox.register("indiv", self.cria_individuo)
+        toolbox.register("pop", tools.initRepeat, list, toolbox.indiv)
+        toolbox.register("mate", self.cruzamento_blx)
+        toolbox.register("mutate", tools.mutGaussian, mu=0, sigma=0.2, indpb=0.2)
+        toolbox.register("select", tools.selTournament, tournsize=num_torneio)
+        
+        # Avaliação paralela ou serial
+        if parallel:
+            # Configura o pool de processos para avaliação paralela
+            pasta = self.dss.get_pasta()
+            arquivo = self.dss.get_arquivo()
+            # Configura o número de processos para o pool (deixando 2 núcleos livres)
+            processos = n_jobs if (isinstance(n_jobs, int) and n_jobs > 0) else max(1, (os.cpu_count() or 2) - 2)
+            ctx = mp.get_context("spawn")
+            pool = ctx.Pool(processes=processos, initializer=_init_worker, 
+                            initargs=(pasta, arquivo, self.kv_base_media_tensao))
+            # Registra o pool para uso no toolbox
+            toolbox.register("map", pool.map)
+            toolbox.register("evaluate", _evaluate_individual_parallel)
+        else:
+            toolbox.register("map", map)
+            toolbox.register("evaluate", self.avalia_individuo)
+        
+        dic_melhores_indiv = {"cromossomos": [], "fobs": []}
+        all_best_fobs = []
 
         t0 = t.time()
-        for rep in range(numRep):
-            print("\n","========================================")
-            print(f"{converte_tempo(t0)} - Iniciando execução do AG... Repetição {rep + 1} de {numRep}")
-            best_fobs = []  # lista de best_fobs desta repetição
+        for rep in range(num_rep):
+            print("\n", "="*40)
+            print(f"{converte_tempo(t0)} - Iniciando AG... Repetição {rep + 1}/{num_rep}")
             
-            toolbox.register("indiv", tools.initIterate, creator.estrIndiv, self.criaCromBatCorr) # registra criação de indivíduo
-            toolbox.register("pop", tools.initRepeat, list, toolbox.indiv)                        # registra criação de população                 
-            populacao = toolbox.pop(n=numPop) # cria população inicial
+            populacao = toolbox.pop(n=num_pop)
+            hof = tools.HallOfFame(1)
 
-            hof = tools.HallOfFame(1) # guarda melhor indivíduo
+            # Avalia a população inicial (paralelo se registrado)
+            fitnesses = toolbox.map(toolbox.evaluate, populacao)
+            for ind, fit in zip(populacao, fitnesses):
+                ind.fitness.values = fit
+            
+            hof.update(populacao)
+            best_fobs_rep = [hof[0].fitness.values[0]]
 
-            # Avalia população inicial
-            invalid_ind = [ind for ind in populacao if not ind.fitness.valid]
-            for ind in invalid_ind:
-                ind.fitness.values = toolbox.evaluate(ind)
+            print("="*10 + " INICIO DAS GERAÇÕES " + "="*10)
+            for gen in range(num_gen):
+                # Elitismo: seleciona os melhores indivíduos para a próxima geração
+                elite = tools.selBest(populacao, elite_size)
+                elite = list(map(toolbox.clone, elite)) # Clona para não manter referências
 
-            print("===INICIO DAS GERAÇÕES===")
-            for gen in range(numGen):
-                if gen % 10 == 0:
-                    print(f"{converte_tempo(t0)} - Geração {gen + 1} de {numGen}... / valor FOB: {melhor_fob if gen > 0 else 'N/A'}")
-                    # print(f"len pop: {len(populacao)}")
+                # Seleciona o restante da população para cruzamento e mutação
+                offspring = toolbox.select(populacao, len(populacao) - elite_size)
+                offspring = list(map(toolbox.clone, offspring))
 
-                # elitismo
-                elite = tools.selBest(populacao, eliteSize)
-
-                # seleção e clonagem
-                offspring = toolbox.select(populacao, len(populacao) - eliteSize) # seleciona o restante da população
-                offspring = list(map(toolbox.clone, offspring)) # clona os selecionados
-
-                # cruzamento
+                # Aplica cruzamento
                 for c1, c2 in zip(offspring[::2], offspring[1::2]):
-                    if random.random() < probCruz:
+                    if random.random() < prob_cruz:
                         toolbox.mate(c1, c2)
                         del c1.fitness.values
                         del c2.fitness.values
 
-                # mutação
+                # Aplica mutação
                 for mut in offspring:
-                    if random.random() < probMut:
+                    if random.random() < prob_mut:
                         toolbox.mutate(mut)
                         del mut.fitness.values
 
-                # avaliação dos novos
+                # Avalia os indivíduos que foram modificados (paralelo se registrado)
                 invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
-                for ind in invalid_ind:
-                    ind.fitness.values = toolbox.evaluate(ind)
+                fitnesses = toolbox.map(toolbox.evaluate, invalid_ind)
+                for ind, fit in zip(invalid_ind, fitnesses):
+                    ind.fitness.values = fit
 
-                # nova população
+                # Cria a nova população
                 populacao[:] = elite + offspring
                 hof.update(populacao)
                 melhor_fob = hof[0].fitness.values[0]
-                best_fobs.append(melhor_fob)
+                best_fobs_rep.append(melhor_fob)
 
-            # guarda melhor (clonado) e seus fobs
-            dicMelhoresIndiv["cromossomos"].append(toolbox.clone(hof[0]))
-            dicMelhoresIndiv["fobs"].append(hof[0].fitness.values[0])
-            all_best_fobs.append(best_fobs)
+                if (gen + 1) % 50 == 0 or gen == num_gen - 1:
+                    print(f"{converte_tempo(t0)} - Geração {gen + 1}/{num_gen} | Melhor FOB: {melhor_fob:.4f}")
+
+            # Guarda o melhor indivíduo e seu FOB para esta repetição
+            dic_melhores_indiv["cromossomos"].append(toolbox.clone(hof[0]))
+            dic_melhores_indiv["fobs"].append(hof[0].fitness.values[0])
+            all_best_fobs.append(best_fobs_rep)
 
         t1 = t.time()
-        print(f"Tempo total: {t1 - t0:.2f} s")
+        print(f"Tempo total de execução: {t1 - t0:.2f} segundos")
 
-        # Retorna: população final da última repetição, placeholder, dicionário, lista de best_fobs por repetição, barras
-        return populacao, None, dicMelhoresIndiv, all_best_fobs, self.barras
+        # Encerra o pool, se criado
+        if parallel:
+            try:
+                pool.close()
+                pool.join()
+            except Exception:
+                pass
+
+        return populacao, None, dic_melhores_indiv, all_best_fobs, self.barras

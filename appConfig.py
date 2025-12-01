@@ -83,10 +83,11 @@ class MainFrame(ttk.Frame):
         self.comboSist.current(1)
         
         #Botoes:
+        self.botao = ttk.Button(self.frameBotoes, text = 'exec', command=lambda: self.appFunctions.FunBotao(self.tree, self.axDeseq, self.canvasDeseq))
         self.botaoCSVFOBS = ttk.Button(self.frameBotoes, text = 'Salvar FOBs', command= self.appFunctions.FunBotaoCSVFOBS)
         self.botaoPlotFOB = ttk.Button(self.frameBotoes, text = 'Plotar FOB', command=lambda: self.appFunctions.FunBotaoPlotarFOB())
         self.botaoPlotCC = ttk.Button(self.frameBotoes, text = 'Curva de Carga', command=lambda: self.appFunctions.FunBotaoPlotar())
-        self.botaoRodar = ttk.Button(self.frameBotoes, text = 'Rodar', style = 'BotaoRodar.TButton' , command=lambda: self.appFunctions.run_ag_in_thread(self.tree, self.axDeseq, self.canvasDeseq, self.comboSist))
+        self.botaoRodar = ttk.Button(self.frameBotoes, text = 'Rodar', style = 'BotaoRodar.TButton' , command=lambda: self.appFunctions.run_ag_in_thread(self.tree, self.axDeseq, self.canvasDeseq, self.comboSist.get()))
         
     def creat_layout(self):
         #Frame Principal:
@@ -114,7 +115,7 @@ class MainFrame(ttk.Frame):
         # self.frameGraficoDeseq.place(relx=0.5, rely=0, relwidth=0.5, relheight=0.92)
         self.frameBotoes.place(relx=0, rely=0.92, relwidth=1, relheight=0.08)
         
-        
+        self.botao.place(relx=0.46, rely=0, relwidth=0.1, relheight=1)
         self.botaoCSVFOBS.place(relx=0.57, rely=0, relwidth=0.1, relheight=1)
         self.botaoPlotFOB.place(relx=0.68, rely=0, relwidth=0.1, relheight=1)
         self.botaoPlotCC.place(relx=0.79, rely=0, relwidth=0.1, relheight=1)
