@@ -15,7 +15,7 @@ eficiencia = 0.95
 #==Dados do sistema==#
 # barra = 671
 NG = 150
-NP = 6
+NP = 600
 NREP = 1
 dT = 1  # Intervalo de tempo em horas
 
@@ -47,10 +47,10 @@ cc = [
 ]
 
 sistemas = {
-    'IEEE 4 bus':{'pasta': '4Bus-DY-Bal', 'arquivo': '4Bus-DY-Bal.DSS', 'baseKVmediaTensao': 4.16},
-    'IEEE 13 bus':{'pasta': '13Bus', 'arquivo': 'IEEE13Nodeckt.dss', 'baseKVmediaTensao': 4.16},
-    'IEEE 34 bus':{'pasta': '34Bus', 'arquivo': 'RUN_IEEE34Mod1.DSS', 'baseKVmediaTensao': 24.9},
-    'IEEE 123 bus':{'pasta': '123Bus', 'arquivo': 'RUN_IEEE123Bus.DSS', 'baseKVmediaTensao': 4.16}
+    'IEEE 4 bus':{'pasta': 'sistemas/4Bus-DY-Bal', 'arquivo': '4Bus-DY-Bal.DSS', 'baseKVmediaTensao': 4.16},
+    'IEEE 13 bus':{'pasta': 'sistemas/13Bus', 'arquivo': 'IEEE13Nodeckt.dss', 'baseKVmediaTensao': 4.16},
+    'IEEE 34 bus':{'pasta': 'sistemas/34Bus', 'arquivo': 'RUN_IEEE34Mod1.DSS', 'baseKVmediaTensao': 24.9},
+    'IEEE 123 bus':{'pasta': 'sistemas/123Bus', 'arquivo': 'RUN_IEEE123Bus.DSS', 'baseKVmediaTensao': 4.16}
 }
 
 
